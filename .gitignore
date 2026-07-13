@@ -1,0 +1,70 @@
+# =========================================
+# n8n workflow repository .gitignore
+# =========================================
+
+# --- Secrets & environment ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+credentials.json
+credentials/
+secrets/
+
+# --- n8n local instance data (if self-hosting via n8n CLI/Docker in this repo) ---
+.n8n/
+n8n_data/
+n8n-data/
+.n8n_backup/
+config/n8n/
+
+# --- n8n export helper files (if using n8n CLI export tooling) ---
+/exports/full-backup/
+/exports/*.tar
+/exports/*.zip
+
+# --- Local n8n binary data / file uploads processed by workflows ---
+binaryData/
+.n8n/binaryData/
+uploads/
+tmp_uploads/
+downloads/
+
+# --- Node.js (if you have custom nodes / scripts alongside workflows) ---
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+pnpm-lock.yaml
+
+# --- Docker ---
+docker-compose.override.yml
+*.env.docker
+
+# --- Editors / OS ---
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# --- Logs ---
+*.log
+logs/
+
+# --- Apify local run artifacts (if using Apify CLI locally to test datasets) ---
+apify_storage/
+storage/
+
+# --- Local exports/scratch data pulled from Supabase or Apify for testing ---
+*.csv
+*.xlsx
+!examples/*.csv
+!examples/*.xlsx
+
+# --- Archives ---
+*.zip
+*.tar.gz
