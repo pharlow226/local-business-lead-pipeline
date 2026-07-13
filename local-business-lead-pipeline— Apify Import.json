@@ -1,0 +1,328 @@
+{
+  "name": "local-business-lead-pipeline— Apify Import",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "732a2591-b251-449d-a829-4830bf0ce2fa",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        144,
+        -48
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ✏️ PASTE YOUR APIFY DATASET ID HERE after each manual run\nconst datasetId = 'WOesH2E4XuaWmVYdN';\n\n// ✏️ Describe what you searched for (for the summary email)\n// e.g. 'Property Management Companies | Jacksonville FL'\nconst searchDescription = 'HOA / Community Managers | Jacksonville FL';\n\nreturn [{ json: { datasetId, searchDescription } }];"
+      },
+      "id": "5feeb2f6-2fff-4d03-bdec-4255a335d215",
+      "name": "Set Dataset ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        368,
+        -48
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://api.apify.com/v2/datasets/{{ $json.datasetId }}/items",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "token",
+              "value": "={{ $env.APIFY_TOKEN }}"
+            },
+            {
+              "name": "format",
+              "value": "json"
+            },
+            {
+              "name": "limit",
+              "value": "500"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "3d572fb9-2b49-4369-9ac3-ac8ef98dc9da",
+      "name": "Fetch Dataset Items",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        592,
+        -48
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const allItems = $input.all();\nconst searchDescription = $('Set Dataset ID').first().json.searchDescription;\nconst datasetId = $('Set Dataset ID').first().json.datasetId;\n\nconst rawLeads = allItems.map(item => item.json);\n\nif (!rawLeads || rawLeads.length === 0) {\n  console.log('No items found in dataset.');\n  return [{ json: {\n    _empty: true,\n    searchDescription,\n    datasetId,\n    _stats: { total_raw: 0, valid: 0, skipped: 0, skip_reasons: {} }\n  }}];\n}\n\nconst leads = [];\nconst skipped = [];\nconst seenPhones = new Set();\nconst seenEmails = new Set();\nconst seenDomains = new Set();\nconst skipReasons = {};\n\nconst trackSkip = (name, reason) => {\n  skipped.push({ name, reason });\n  skipReasons[reason] = (skipReasons[reason] || 0) + 1;\n};\n\n// Helper: normalize state abbreviation\nconst normalizeState = (s) => {\n  if (!s) return 'FL';\n  const lower = s.toLowerCase().trim();\n  if (lower === 'florida') return 'FL';\n  return s.trim().toUpperCase();\n};\n\nfor (const item of rawLeads) {\n  const businessName = item.title || item.name || item.business_name || 'N/A';\n  const phone = item.phone || item.phoneNumber || item.phone_number || null;\n  const email = item.email || item.business_email || null;\n\n  // FIX: Only use item.website for domain — never fall back to item.url\n  // item.url is a Google Maps URL and would poison domain dedup with google.com\n  const rawWebsite = item.website || '';\n  const websiteDomain = rawWebsite\n    ? rawWebsite.replace(/^https?:\\/\\/(www\\.)?/, '').replace(/\\/.*$/, '').toLowerCase().trim()\n    : null;\n  const emailDomain = email ? email.split('@')[1]?.toLowerCase() : null;\n\n  // Domain: prefer website domain, fall back to email domain — never use item.url\n  const domain = item.domain || websiteDomain || emailDomain || null;\n  const website = rawWebsite || null;\n\n  const category = item.category || item.categoryName || item.type || 'N/A';\n  const city = item.city || item.address?.city || 'Jacksonville';\n\n  // FIX: Normalize state — Apify returns 'Florida', schema expects 'FL'\n  const state = normalizeState(item.state || item.address?.state);\n\n  const source = 'apify';\n\n  // 1. Must have business name\n  if (businessName === 'N/A') { trackSkip(businessName, 'No business name'); continue; }\n\n  // 2. Must be Jacksonville\n  const cityLower = city.toLowerCase();\n  if (!cityLower.includes('jacksonville')) { trackSkip(businessName, `Not Jacksonville: ${city}`); continue; }\n\n  // 3. Must have phone OR email\n  if (!phone && !email) { trackSkip(businessName, 'No phone or email'); continue; }\n\n  // 4. In-memory dedup\n  const cleanPhone = phone ? phone.replace(/\\D/g, '') : null;\n  const cleanEmail = email ? email.toLowerCase() : null;\n  const cleanDomain = domain ? domain.toLowerCase() : null;\n\n  if (cleanPhone && seenPhones.has(cleanPhone)) { trackSkip(businessName, `Duplicate phone: ${phone}`); continue; }\n  if (cleanEmail && seenEmails.has(cleanEmail)) { trackSkip(businessName, `Duplicate email: ${email}`); continue; }\n  if (cleanDomain && seenDomains.has(cleanDomain)) { trackSkip(businessName, `Duplicate domain: ${domain}`); continue; }\n\n  if (cleanPhone) seenPhones.add(cleanPhone);\n  if (cleanEmail) seenEmails.add(cleanEmail);\n  if (cleanDomain) seenDomains.add(cleanDomain);\n\n  // 5. Determine status\n  const status = phone ? 'new' : 'email_only';\n\n  leads.push({\n    business_name: businessName,\n    category,\n    phone: phone || null,\n    email: email || null,\n    website: website || null,\n    domain: cleanDomain || null,\n    city,\n    state,\n    source,\n    status,\n    _searchDescription: searchDescription,\n    _datasetId: datasetId\n  });\n}\n\nconst stats = {\n  total_raw: rawLeads.length,\n  valid: leads.length,\n  skipped: skipped.length,\n  skip_reasons: skipReasons,\n  skipped_details: skipped\n};\n\nconsole.log(`Raw: ${stats.total_raw} | Valid: ${stats.valid} | Skipped: ${stats.skipped}`);\nconsole.log('Skip reasons:', JSON.stringify(skipReasons));\n\nif (leads.length === 0) {\n  return [{ json: { _empty: true, searchDescription, datasetId, _stats: stats } }];\n}\n\n// FIX: Attach _finalStats to ALL leads so it survives even if the last lead\n// gets filtered out downstream\nreturn leads.map(l => ({ json: { ...l, _finalStats: stats } }));"
+      },
+      "id": "47a4c623-d0dc-465c-91dc-f04f4a4a12fd",
+      "name": "Parse & Map Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        816,
+        -48
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json._empty }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "notEquals"
+              },
+              "id": "996d9e80-e160-43ae-888c-cba11a886877"
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "3c50acb5-ee40-4ec2-ad16-663a210152a6",
+      "name": "Filter Valid Leads",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [
+        1040,
+        -48
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/glow_guys_leads",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{ $env.SUPABASE_ANON_KEY }}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.SUPABASE_SERVICE_ROLE_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "resolution=ignore-duplicates,return=representation"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"business_name\": {{ JSON.stringify($json.business_name) }},\n  \"category\":      {{ JSON.stringify($json.category) }},\n  \"phone\":         {{ JSON.stringify($json.phone) }},\n  \"email\":         {{ JSON.stringify($json.email) }},\n  \"website\":       {{ JSON.stringify($json.website) }},\n  \"domain\":        {{ JSON.stringify($json.domain) }},\n  \"city\":          {{ JSON.stringify($json.city) }},\n  \"state\":         {{ JSON.stringify($json.state) }},\n  \"source\":        \"apify\",\n  \"status\":        {{ JSON.stringify($json.status) }}\n}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "ccbe9dbb-463a-41c8-8e07-8f87adc220f8",
+      "name": "Save Lead to Supabase",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1264,
+        -48
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const allItems = $input.all();\n\n// FIX: Supabase with 'resolution=ignore-duplicates,return=representation' returns:\n//   - non-empty array  → row was newly inserted\n//   - empty array []   → row already existed (duplicate ignored)\n//   - non-array        → error occurred\nconst saved = allItems.filter(i =>\n  Array.isArray(i.json) && i.json.length > 0\n).length;\n\nconst supabaseDuplicates = allItems.filter(i =>\n  Array.isArray(i.json) && i.json.length === 0\n).length;\n\nconst failed = allItems.filter(i =>\n  !Array.isArray(i.json)\n).length;\n\nconst searchDescription = $('Set Dataset ID').first().json.searchDescription;\nconst datasetId = $('Set Dataset ID').first().json.datasetId;\n\n// FIX: _finalStats is now on every lead, so grab from first item\nlet parseStats = { total_raw: 0, valid: 0, skipped: 0, skip_reasons: {}, skipped_details: [] };\ntry {\n  const parseItems = $('Parse & Map Results').all();\n  if (parseItems.length > 0 && parseItems[0].json._finalStats) {\n    parseStats = parseItems[0].json._finalStats;\n  }\n} catch(e) {\n  console.log('Could not recover parse stats:', e.message);\n}\n\n// Count phone vs email-only leads\nconst parseItems = $('Parse & Map Results').all();\nconst phoneLeads = parseItems.filter(i => i.json.phone && !i.json._empty).length;\nconst emailOnlyLeads = parseItems.filter(i => !i.json.phone && i.json.email && !i.json._empty).length;\n\nconst runDate = new Date().toISOString();\n\nconsole.log(`Summary — Raw: ${parseStats.total_raw} | Valid: ${parseStats.valid} | Skipped: ${parseStats.skipped} | Saved: ${saved} | Duplicates: ${supabaseDuplicates} | Failed: ${failed}`);\n\nreturn [{ json: {\n  total_raw: parseStats.total_raw,\n  total_valid: parseStats.valid,\n  total_skipped: parseStats.skipped,\n  skip_reasons: parseStats.skip_reasons,\n  skipped_details: parseStats.skipped_details,\n  total_saved: saved,\n  total_duplicates: supabaseDuplicates,\n  total_failed: failed,\n  phone_leads: phoneLeads,\n  email_only_leads: emailOnlyLeads,\n  searchDescription,\n  datasetId,\n  run_date: runDate\n}}];"
+      },
+      "id": "a3fbeaad-7e86-490f-850d-9665e61a8965",
+      "name": "Build Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1488,
+        -48
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/glow_guys_import_logs",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{ $env.SUPABASE_ANON_KEY }}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.SUPABASE_SERVICE_ROLE_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"search_description\": {{ JSON.stringify($json.searchDescription) }},\n  \"dataset_id\":         {{ JSON.stringify($json.datasetId) }},\n  \"total_raw\":          {{ $json.total_raw }},\n  \"total_valid\":        {{ $json.total_valid }},\n  \"total_skipped\":      {{ $json.total_skipped }},\n  \"total_saved\":        {{ $json.total_saved }},\n  \"total_duplicates\":   {{ $json.total_duplicates }},\n  \"total_failed\":       {{ $json.total_failed }},\n  \"skip_reasons\":       {{ JSON.stringify($json.skip_reasons) }},\n  \"skipped_details\":    {{ JSON.stringify($json.skipped_details) }},\n  \"run_at\":             {{ JSON.stringify($json.run_date) }}\n}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "44477dd3-c2de-4906-a4b8-06bd20ec2bda",
+      "name": "Save Import Log",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1712,
+        -48
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $env.NOTIFY_EMAIL }}",
+        "subject": "=✅ Glow Guys Import Done: {{ $json.total_saved }} New | {{ $json.total_duplicates }} Already Existed | {{ $json.total_skipped }} Skipped",
+        "message": "=<h2>Glow Guys Lead Import — Complete</h2>\n<p><strong>Search:</strong> {{ $json.searchDescription }}</p>\n<p><strong>Dataset ID:</strong> {{ $json.datasetId }}</p>\n<p><strong>Run at:</strong> {{ $json.run_date }}</p>\n<hr>\n\n<h3>📊 Import Summary</h3>\n<table style=\"border-collapse:collapse;width:100%;font-family:Arial,sans-serif;\">\n  <tr style=\"background:#f0f0f0;\">\n    <td style=\"padding:8px 12px;border:1px solid #ddd;\"><strong>Total fetched from Apify</strong></td>\n    <td style=\"padding:8px 12px;border:1px solid #ddd;\">{{ $json.total_raw }}</td>\n  </tr>\n  <tr>\n    <td style=\"padding:8px 12px;border:1px solid #ddd;\"><strong>Passed validation</strong></td>\n    <td style=\"padding:8px 12px;border:1px solid #ddd;\">{{ $json.total_valid }}</td>\n  </tr>\n  <tr style=\"background:#f0f0f0;\">\n    <td style=\"padding:8px 12px;border:1px solid #ddd;\"><strong>📞 Phone leads (act immediately)</strong></td>\n    <td style=\"padding:8px 12px;border:1px solid #ddd;color:green;\"><strong>{{ $json.phone_leads }}</strong></td>\n  </tr>\n  <tr>\n    <td style=\"padding:8px 12px;border:1px solid #ddd;\"><strong>📧 Email-only leads (enrich later)</strong></td>\n    <td style=\"padding:8px 12px;border:1px solid #ddd;color:blue;\">{{ $json.email_only_leads }}</td>\n  </tr>\n  <tr style=\"background:#f0f0f0;\">\n    <td style=\"padding:8px 12px;border:1px solid #ddd;\"><strong>✅ Newly saved to Supabase</strong></td>\n    <td style=\"padding:8px 12px;border:1px solid #ddd;color:green;\"><strong>{{ $json.total_saved }}</strong></td>\n  </tr>\n  <tr>\n    <td style=\"padding:8px 12px;border:1px solid #ddd;\"><strong>⏭️ Already existed (duplicates)</strong></td>\n    <td style=\"padding:8px 12px;border:1px solid #ddd;color:gray;\">{{ $json.total_duplicates }}</td>\n  </tr>\n  <tr style=\"background:#f0f0f0;\">\n    <td style=\"padding:8px 12px;border:1px solid #ddd;\"><strong>🚫 Filtered out before save</strong></td>\n    <td style=\"padding:8px 12px;border:1px solid #ddd;color:orange;\">{{ $json.total_skipped }}</td>\n  </tr>\n  {{ $json.total_failed > 0 ? `<tr><td style=\"padding:8px 12px;border:1px solid #ddd;\"><strong>❌ Save errors</strong></td><td style=\"padding:8px 12px;border:1px solid #ddd;color:red;\">${$json.total_failed}</td></tr>` : '' }}\n</table>\n\n{{ Object.keys($json.skip_reasons).length > 0 ? `\n<h3>🚫 Why Leads Were Filtered</h3>\n<table style=\"border-collapse:collapse;width:100%;font-family:Arial,sans-serif;\">\n  <tr style=\"background:#f0f0f0;\">\n    <td style=\"padding:8px 12px;border:1px solid #ddd;\"><strong>Reason</strong></td>\n    <td style=\"padding:8px 12px;border:1px solid #ddd;\"><strong>Count</strong></td>\n  </tr>\n  ${Object.entries($json.skip_reasons).map(([reason, count]) => `<tr><td style=\"padding:8px 12px;border:1px solid #ddd;\">${reason}</td><td style=\"padding:8px 12px;border:1px solid #ddd;\">${count}</td></tr>`).join('')}\n</table>` : '' }}\n\n{{ $json.skipped_details && $json.skipped_details.length > 0 ? `\n<h3>📋 Filtered Leads Detail</h3>\n<table style=\"border-collapse:collapse;width:100%;font-family:Arial,sans-serif;font-size:12px;\">\n  <tr style=\"background:#f0f0f0;\">\n    <td style=\"padding:6px 10px;border:1px solid #ddd;\"><strong>Business</strong></td>\n    <td style=\"padding:6px 10px;border:1px solid #ddd;\"><strong>Reason</strong></td>\n  </tr>\n  ${$json.skipped_details.map(s => `<tr><td style=\"padding:6px 10px;border:1px solid #ddd;\">${s.name}</td><td style=\"padding:6px 10px;border:1px solid #ddd;\">${s.reason}</td></tr>`).join('')}\n</table>` : '' }}\n\n<hr>\n<p style=\"color:gray;font-size:12px;\">View phone leads in Supabase: <strong>status = new</strong><br>View email-only leads: <strong>status = email_only</strong><br>Full import history: <strong>glow_guys_import_logs</strong> table.</p>",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "5f6afa8c-9ed0-4ecf-9844-e2762fd81ddf",
+      "name": "Send Summary Email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        1936,
+        -48
+      ],
+      "webhookId": "gg-notify-001"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Set Dataset ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Dataset ID": {
+      "main": [
+        [
+          {
+            "node": "Fetch Dataset Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Dataset Items": {
+      "main": [
+        [
+          {
+            "node": "Parse & Map Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse & Map Results": {
+      "main": [
+        [
+          {
+            "node": "Filter Valid Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Valid Leads": {
+      "main": [
+        [
+          {
+            "node": "Save Lead to Supabase",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Lead to Supabase": {
+      "main": [
+        [
+          {
+            "node": "Build Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Summary": {
+      "main": [
+        [
+          {
+            "node": "Save Import Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Import Log": {
+      "main": [
+        [
+          {
+            "node": "Send Summary Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "b71315a8-94ed-4166-8080-4b060047ded1",
+  "meta": {
+    "instanceId": "478fbece8fc591272cee7259774fcca30fb978c9e5efbf4d2caf74f2a68343b5"
+  },
+  "nodeGroups": [],
+  "id": "Ke92qYp1SCT2WdVG",
+  "tags": []
+}
