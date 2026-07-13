@@ -17,7 +17,7 @@ An [n8n](https://n8n.io) workflow that pulls local business leads scraped via [A
 
 ## What It Does
 
-**File:** `Glow_Guys_Apify_Import.json`
+**File:** `local-business-lead-pipeline— Apify Import.json`
 
 1. **Manual trigger** – Run manually after configuring the Apify dataset ID for a completed scrape.
 2. **Set Dataset ID** – Set the Apify dataset ID and a human-readable description of the search (both edited directly in the node before each run).
@@ -64,7 +64,7 @@ Apify Dataset → Parse/Normalize → Validate & Dedupe → Supabase (leads) →
 
 ## Setup & Import Instructions
 
-1. **Import the workflow**: in n8n, go to **Workflows → Import from File**, and select `Glow_Guys_Apify_Import.json`.
+1. **Import the workflow**: in n8n, go to **Workflows → Import from File**, and select `local-business-lead-pipeline— Apify Import.json`.
 2. **Set environment variables** — see [Environment Variables](#environment-variables) below.
 3. **Set up Supabase tables**: create `glow_guys_leads` (with a unique constraint on phone/email/domain to make the "ignore duplicates" behavior work) and `glow_guys_import_logs`.
 4. **Before each run**: open the **Set Dataset ID** node and update `datasetId` with the Apify dataset ID from your latest scrape, and update `searchDescription` with a short label for that search (used in the summary email).
